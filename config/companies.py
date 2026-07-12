@@ -55,10 +55,28 @@ def detect_company(raw_text: str) -> str:
     text = raw_text.upper()
     scores = {}
 
+    def contains_term(text, term):
+        term = term.strip().upper()
+        if not term:
+            return False
+        if term in text:
+            if not term.isalpha() or len(term) > 3:
+                return True
+            start = 0
+            while True:
+                idx = text.find(term, start)
+                if idx == -1:
+                    return False
+                before = text[idx - 1] if idx > 0 else " "
+                after = text[idx + len(term)] if idx + len(term) < len(text) else " "
+                if not before.isalnum() and not after.isalnum():
+                    return True
+                start = idx + 1
+        return False
+
     for keyword, company in INSURANCE_COMPANIES.items():
-        score = text.count(keyword.upper())
-        if score:
-            scores[company] = scores.get(company, 0) + score
+        if contains_term(text, keyword):
+            scores[company] = scores.get(company, 0) + 1
 
     if not scores:
         return "Unknown"

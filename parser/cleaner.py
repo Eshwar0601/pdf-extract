@@ -90,17 +90,12 @@ def clean_percentage(value):
 
     value = str(value)
 
-    digits = []
-
-    for ch in value:
-
-        if ch.isdigit():
-            digits.append(ch)
-
-    if not digits:
+    match = re.search(r"\b(\d{1,3})\s*%", value)
+    if not match:
+        match = re.search(r"\b(\d{1,3})\b", value)
+    if not match:
         return "0%"
-
-    return f'{"".join(digits)}%'
+    return f"{match.group(1)}%"
 
 
 def clean_mobile(value):
@@ -136,30 +131,42 @@ def clean_email(value):
 
     value = clean_text(value)
 
-    if "@" not in value:
+    match = re.search(r"[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}", value, re.I)
+    if not match:
         return "Not Found"
-
-    return value
+    return match.group(0)
 
 
 def clean_policy_number(value):
-    """
-    Policy number cleanup
-    """
+    """Policy number cleanup and boundary trimming."""
 
     if not value:
         return "Not Found"
 
     value = clean_text(value)
+    if not value:
+        return "Not Found"
 
     value = value.replace(":", "")
     value = value.replace("#", "")
 
-    return value.strip()
+    tokens = value.split()
+    stops = ["through", "preferred", "insurance", "partner", "proposal", "proposal no", "via", "on", "by"]
+    trimmed = []
+    for token in tokens:
+        if token.lower() in stops:
+            break
+        trimmed.append(token)
+
+    value = " ".join(trimmed).strip()
+    if not any(ch.isdigit() for ch in value):
+        return "Not Found"
+
+    return value
 
 
 def clean_vehicle_number(value):
-    """Normalize vehicle registration numbers."""
+    """Normalize vehicle registration numbers and reject IRDA labels."""
 
     if not value:
         return "Not Found"
@@ -174,13 +181,16 @@ def clean_vehicle_number(value):
     cleaned = "".join(ch for ch in value if ch.isalnum())
     cleaned = cleaned.upper()
 
-    if len(cleaned) < 4:
+    if len(cleaned) < 6:
         return "Not Found"
 
-    if cleaned.startswith("DL") or cleaned.startswith("KA") or cleaned.startswith("MH") or cleaned.startswith("TN"):
+    if cleaned[:2].isalpha() and cleaned[2:].isdigit():
         return cleaned
 
-    return cleaned if cleaned.isalnum() else "Not Found"
+    if cleaned.startswith(("DL", "KA", "MH", "TN", "UP", "PY", "OD", "WB", "AP", "CH", "GJ", "RJ", "PB", "HR")):
+        return cleaned
+
+    return "Not Found"
 
 
 def clean_date(value):
@@ -199,6 +209,9 @@ def clean_date(value):
         return "Not Found"
 
     value = clean_text(value)
+    match = re.search(r"\b\d{1,2}[/-][A-Za-z]{3,9}[/-]\d{2,4}\b|\b\d{1,2}\s+[A-Za-z]{3,9}\s+\d{2,4}\b|\b\d{1,2}[/-]\d{1,2}[/-]\d{2,4}\b", value)
+    if match:
+        value = match.group(0)
 
     formats = [
 
@@ -226,50 +239,64 @@ def clean_date(value):
 
 
 def clean_address(value):
-    """
-    Address cleanup
-    """
+    """Address cleanup with stop-word trimming."""
 
     if not value:
         return "Not Found"
 
     value = clean_text(value)
+    if not value:
+        return "Not Found"
 
-    return value
+    lower = value.lower()
+    stops = ["phone", "mobile", "email", "gstin", "vehicle", "policy", "registration", "previous policy", "nominee", "premium", "helpline", "help line", "website", "fax"]
+    earliest = len(value)
+    for stop in stops:
+        idx = lower.find(stop)
+        if idx != -1 and idx < earliest:
+            earliest = idx
+    if earliest < len(value):
+        value = value[:earliest].strip()
+
+    return value if value else "Not Found"
 
 
 def clean_name(value):
-    """
-    Customer / Nominee name cleanup
-    """
+    """Customer / Nominee name cleanup."""
 
     if not value:
         return "Not Found"
 
     value = clean_text(value)
+    if not value:
+        return "Not Found"
 
     prefixes = [
-
         "MR.",
         "MRS.",
         "MS.",
         "MISS",
         "SHRI",
         "SMT"
-
     ]
 
     upper = value.upper()
-
     for prefix in prefixes:
-
         if upper.startswith(prefix):
-
             value = value[len(prefix):].strip()
-
             break
 
-    return value
+    stops = ["period of insurance", "policy period", "cover", "validity", "premium", "gstin", "proposal", "previous" ]
+    lower = value.lower()
+    earliest = len(value)
+    for stop in stops:
+        idx = lower.find(stop)
+        if idx != -1 and idx < earliest:
+            earliest = idx
+    if earliest < len(value):
+        value = value[:earliest].strip()
+
+    return value if value else "Not Found"
 
 
 def clean_age(value):

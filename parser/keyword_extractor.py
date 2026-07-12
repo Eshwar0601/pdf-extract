@@ -1,5 +1,7 @@
 """Coordinate-aware keyword extraction for insurance PDFs."""
 
+import re
+
 from config.keywords import FIELDS
 
 
@@ -28,36 +30,38 @@ class KeywordExtractor:
         return data
 
     def extract_field(self, field, keywords):
-        for keyword in keywords:
+        for keyword in sorted(keywords, key=lambda item: -len(item)):
             candidate = self.find_keyword(keyword, field)
             if candidate:
                 return candidate
 
         for table in self.tables:
-            candidate = self.extract_table_value(table, keywords)
+            candidate = self.extract_table_value(table, keywords, field)
             if candidate:
                 return candidate
 
         return "Not Found"
 
     def find_keyword(self, keyword, field_name=None):
-        keyword_clean = keyword.strip().lower()
-
         for index, line in enumerate(self.lines):
-            lower_line = line.lower()
-            if keyword_clean not in lower_line:
+            match = self.find_keyword_match(line, keyword)
+            if not match:
                 continue
 
-            value = self.extract_same_line(line, keyword)
+            value = self.extract_same_line(line, keyword, field_name, match)
             if value:
-                return self.clean_candidate(value)
+                cleaned = self.clean_candidate(value)
+                if cleaned and self.is_valid_value(cleaned, field_name):
+                    return cleaned
 
-            value = self.extract_below(index, keyword)
+            value = self.extract_below(index, keyword, field_name)
             if value:
-                return self.clean_candidate(value)
+                cleaned = self.clean_candidate(value)
+                if cleaned and self.is_valid_value(cleaned, field_name):
+                    return cleaned
 
         for word in self.word_index:
-            if word.get("text", "").strip().lower() == keyword_clean:
+            if word.get("text", "").strip().lower() == keyword.strip().lower():
                 return self.extract_using_coordinates(word, field_name)
 
         return None
@@ -69,17 +73,114 @@ class KeywordExtractor:
                 matches.append(word)
         return matches
 
-    def extract_same_line(self, line, keyword):
-        lower_line = line.lower()
-        position = lower_line.find(keyword.lower())
-        if position == -1:
-            return None
+    def find_keyword_match(self, line, keyword):
+        keyword_text = str(keyword).strip().lower()
+        keyword_text = re.sub(r"[\.:]+$", "", keyword_text)
+        pattern = rf"(?<!\w){re.escape(keyword_text)}(?!\w)"
+        return re.search(pattern, line.lower())
 
-        value = line[position + len(keyword):].strip()
+    def extract_same_line(self, line, keyword, field_name=None, match=None):
+        if match is None:
+            match = self.find_keyword_match(line, keyword)
+            if not match:
+                return None
+
+        value = line[match.end():].strip()
         while value.startswith(":") or value.startswith("-"):
             value = value[1:].strip()
-        if not value or value.lower() == keyword.lower():
+        if not value or value.lower() == str(keyword).strip().lower():
             return None
+
+        if self.is_table_header_line(value):
+            return None
+
+        if field_name == "customerName":
+            value = self.trim_after_date_token(value)
+
+        if field_name in {"policyStartDate", "policyEndDate"}:
+            value = self.select_date_from_value(value, "first" if field_name == "policyStartDate" else "last")
+
+        value = self.trim_after_stop_keyword(value)
+        return value
+
+    def select_date_from_value(self, value, prefer="first"):
+        dates = self.find_date_tokens(value)
+        if not dates:
+            return value
+        return dates[0] if prefer == "first" else dates[-1]
+
+    def find_date_tokens(self, value):
+        if not value:
+            return []
+
+        patterns = [
+            r"\b\d{1,2}[/-]\d{1,2}[/-]\d{2,4}\b",
+            r"\b\d{1,2}\s+[A-Za-z]{3,9}\s+\d{2,4}\b",
+            r"\b\d{1,2}-[A-Za-z]{3}-\d{2,4}\b",
+            r"\b\d{1,2}\.\d{1,2}\.\d{2,4}\b"
+        ]
+        dates = []
+        for pattern in patterns:
+            dates.extend(re.findall(pattern, value))
+        return [date.strip() for date in dates if date.strip()]
+
+    def trim_after_date_token(self, value):
+        if not value:
+            return value
+
+        pattern = r"\b\d{1,2}[/-]\d{1,2}[/-]\d{2,4}\b(?:\s*(?:to|-|TO|To)\s*\b\d{1,2}[/-]\d{1,2}[/-]\d{2,4}\b)?"
+        match = re.search(pattern, value)
+        if match:
+            return value[:match.start()].strip()
+
+        return value
+
+    def is_table_header_line(self, value):
+        lower = value.lower()
+        header_terms = [
+            "model",
+            "variant",
+            "cubic capacity",
+            "gvw",
+            "seating capacity",
+            "engine",
+            "chassis",
+            "vin",
+            "registration",
+            "vehicle type"
+        ]
+        matches = sum(1 for term in header_terms if term in lower)
+        return matches >= 2
+
+    def trim_after_stop_keyword(self, value):
+        stop_terms = [
+            "policy",
+            "period",
+            "cover",
+            "premium",
+            "validity",
+            "vehicle",
+            "registration",
+            "phone",
+            "mobile",
+            "email",
+            "gstin",
+            "nominee",
+            "proposal",
+            "previous",
+            "fax",
+            "website",
+            "address",
+            "helpline"
+        ]
+        lower_value = value.lower()
+        earliest = len(value)
+        for term in stop_terms:
+            idx = lower_value.find(term)
+            if idx != -1 and idx < earliest:
+                earliest = idx
+        if earliest < len(value):
+            value = value[:earliest].strip()
         return value
 
     def extract_right(self, keyword_word):
@@ -94,13 +195,23 @@ class KeywordExtractor:
         candidates.sort(key=lambda item: item.get("x0", 0))
         return candidates
 
-    def extract_below(self, index, keyword):
-        if index + 1 >= len(self.lines):
-            return None
-        next_line = self.lines[index + 1].strip()
-        if len(next_line) < 2:
-            return None
-        return next_line
+    def extract_below(self, index, keyword, field_name=None):
+        for offset in range(1, 3):
+            if index + offset >= len(self.lines):
+                break
+            next_line = self.lines[index + offset].strip()
+            if len(next_line) < 2:
+                continue
+            if self.is_table_header_line(next_line):
+                continue
+            if field_name == "customerName":
+                next_line = self.trim_after_date_token(next_line)
+            if field_name in {"policyStartDate", "policyEndDate"}:
+                next_line = self.select_date_from_value(next_line, "first" if field_name == "policyStartDate" else "last")
+            next_line = self.trim_after_stop_keyword(next_line)
+            if next_line and self.is_valid_value(next_line, field_name):
+                return next_line
+        return None
 
     def extract_table(self, tables):
         for table in tables:
@@ -150,21 +261,53 @@ class KeywordExtractor:
         value = str(value).strip()
         if not value or value.lower() in {"not found", "unknown", "n/a"}:
             return False
-        if field_name == "customerName" and any(token in value.lower() for token in ["policy", "period", "cover", "premium", "gstin"]):
+        lower_value = value.lower()
+        if field_name == "customerName" and any(token in lower_value for token in ["policy", "period", "cover", "premium", "gstin", "help", "contact"]):
             return False
-        if field_name == "policyNumber" and len(value) < 2:
-            return False
-        if field_name == "customerMobileNumber" and len("".join(ch for ch in value if ch.isdigit())) < 10:
-            return False
+        if field_name == "policyNumber":
+            if len(value) < 5 or not any(ch.isdigit() for ch in value):
+                return False
+            if any(token in lower_value for token in ["through", "preferred", "insurance partner", "proposal", "proposal no"]):
+                return False
+        if field_name == "customerMobileNumber":
+            digits = "".join(ch for ch in value if ch.isdigit())
+            if len(digits) < 10:
+                return False
+            if any(token in lower_value for token in ["helpline", "help", "phone", "toll"]):
+                return False
         if field_name == "customerEmailId" and "@" not in value:
             return False
+        if field_name == "customerEmailId" and any(token in lower_value for token in ["support@", "customercare@", "grievance@", "customerservice@"]):
+            return False
+        if field_name in {"policyStartDate", "policyEndDate", "customerDOB"} and not self.find_date_tokens(value):
+            return False
+        if field_name in {"vehicleEngineNumber", "vehicleChassisNumber"}:
+            compact = re.sub(r"[^A-Za-z0-9]", "", value)
+            if len(compact) < 5 or len(compact) > 24 or not any(char.isdigit() for char in compact):
+                return False
+        if field_name == "vehicleRegistrationNumber":
+            if "irda" in lower_value or "registration no" in lower_value:
+                return False
+            if len("".join(ch for ch in value if ch.isalnum())) < 7:
+                return False
+        if field_name == "gstAmount":
+            if "gstin" in lower_value or any(token in lower_value for token in ["cin", "pan", "registration"]):
+                return False
         return True
 
     def clean_candidate(self, candidate, field_hint=None):
         if candidate is None:
             return None
         if isinstance(candidate, list):
-            candidate = " ".join(str(item.get("text", "")).strip() for item in candidate if str(item.get("text", "")).strip())
+            pieces = []
+            for item in candidate:
+                if isinstance(item, dict):
+                    text = str(item.get("text", "")).strip()
+                else:
+                    text = str(item).strip()
+                if text:
+                    pieces.append(text)
+            candidate = " ".join(pieces)
         candidate = str(candidate).strip()
         if not candidate:
             return None
@@ -187,6 +330,8 @@ class KeywordExtractor:
                     continue
                 if self.is_keyword(text):
                     break
+                if field_name == "customerName" and any(token in text.lower() for token in ["period", "policy", "cover", "premium", "gstin", "help", "contact"]):
+                    break
                 value_words.append(text)
             if value_words:
                 value = self.clean_candidate(value_words)
@@ -201,19 +346,34 @@ class KeywordExtractor:
 
         return None
 
-    def extract_table_value(self, table, keywords):
+    def extract_table_value(self, table, keywords, field_name=None):
         if not table:
             return None
-        for row in table:
+        for row_index, row in enumerate(table):
             if not row:
                 continue
             row_values = [str(col).strip() if col else "" for col in row]
-            joined = " ".join(row_values).lower()
             for keyword in keywords:
-                if keyword.lower() in joined:
-                    for col in row_values:
-                        if col.lower() != keyword.lower() and col:
-                            value = self.clean_candidate(col)
-                            if self.is_valid_value(value, None):
+                for idx, cell in enumerate(row_values):
+                    if self.cell_contains_keyword(cell, keyword):
+                        if idx + 1 < len(row_values) and row_values[idx + 1].strip():
+                            value = self.clean_candidate(row_values[idx + 1])
+                            if self.is_valid_value(value, field_name):
                                 return value
+                        if row_index + 1 < len(table):
+                            next_row = table[row_index + 1]
+                            if idx < len(next_row):
+                                value = self.clean_candidate(str(next_row[idx]).strip())
+                                if self.is_valid_value(value, field_name):
+                                    return value
+                        break
         return None
+
+    def cell_contains_keyword(self, cell, keyword):
+        if not cell:
+            return False
+        cell_text = str(cell).strip().lower()
+        keyword_text = str(keyword).strip().lower()
+        keyword_text = re.sub(r"[\.:]+$", "", keyword_text)
+        pattern = rf"(?<!\w){re.escape(keyword_text)}(?!\w)"
+        return bool(re.search(pattern, cell_text))

@@ -4,6 +4,7 @@ from parser.keyword_extractor import KeywordExtractor
 from parser.formatter import format_response, merge_data
 from config.companies import detect_company
 from config.insurance_types import detect_insurance_type
+from parser.rule_extractor import RuleExtractor
 
 
 def extract_policy_data(pages, lines, raw_text, words=None, tables=None):
@@ -12,6 +13,7 @@ def extract_policy_data(pages, lines, raw_text, words=None, tables=None):
 
     extractor = KeywordExtractor(lines=lines, words=words or [], tables=tables or [], raw_text=raw_text)
     keyword_result = extractor.extract()
+    rule_result = RuleExtractor(lines, raw_text).extract()
 
     coordinate_result = {}
     table_result = {}
@@ -20,7 +22,9 @@ def extract_policy_data(pages, lines, raw_text, words=None, tables=None):
         if keyword_result[field] not in [None, "", "Not Found"]:
             coordinate_result[field] = keyword_result[field]
 
-    merged = merge_data(coordinate_result, table_result, keyword_result)
+    # High-confidence label + format rules take precedence over generic keyword
+    # matching.  The latter remains a useful fallback for unrecognised layouts.
+    merged = merge_data(rule_result, coordinate_result, table_result, keyword_result)
     merged["companyName"] = company
     merged["insuranceType"] = insurance_type
 

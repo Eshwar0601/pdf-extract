@@ -26,14 +26,14 @@ FIELDS = {
         "Name of Life Assured"
     ],
     "customerAddress": [
-        "Address",
         "Customer Address",
         "Insured Address",
         "Insured Address and Contact Details",
         "Communication Address",
         "Permanent Address",
         "Residential Address",
-        "Postal Address"
+        "Postal Address",
+        "Address"
     ],
     "customerMobileNumber": [
         "Mobile",
@@ -105,20 +105,24 @@ FIELDS = {
     ],
     "policyStartDate": [
         "Period of Insurance From",
+        "Period of Insurance From:",
+        "Policy Period From",
+        "Policy Period From:",
         "Coverage From",
         "Policy Start Date",
         "Start Date",
         "Risk Commencement",
-        "Risk Commencement Date",
-        "From"
+        "Risk Commencement Date"
     ],
     "policyEndDate": [
         "Period of Insurance To",
+        "Period of Insurance To:",
+        "Policy Period To",
+        "Policy Period To:",
         "Coverage To",
         "Policy End Date",
         "Expiry Date",
-        "End Date",
-        "To"
+        "End Date"
     ],
     "insuranceBranch": [
         "Branch",
@@ -139,18 +143,18 @@ FIELDS = {
         "Regn. No"
     ],
     "vehicleMake": [
-        "Make",
         "Vehicle Make",
         "Make of Vehicle",
-        "Manufacturer"
+        "Manufacturer",
+        "Make"
     ],
     "vehicleModel": [
-        "Model",
         "Vehicle Model",
         "Variant",
         "Model/Vehicle Variant",
         "Vehicle Variant",
-        "Model Name"
+        "Model Name",
+        "Model"
     ],
     "vehicleEngineNumber": [
         "Engine Number",
