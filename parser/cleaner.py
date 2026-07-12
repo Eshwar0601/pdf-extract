@@ -130,6 +130,8 @@ def clean_email(value):
         return "Not Found"
 
     value = clean_text(value)
+    if "*" in value:
+        return "Not Found"
 
     match = re.search(r"[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}", value, re.I)
     if not match:

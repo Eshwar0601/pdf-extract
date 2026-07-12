@@ -14,34 +14,105 @@ MONEY = r"(?:₹|Rs\.?|INR)?\s*([\d,]+(?:\.\d{1,2})?)"
 
 
 class RuleExtractor:
-    def __init__(self, lines, raw_text):
+    def __init__(self, lines, raw_text, tables=None):
         self.lines = [re.sub(r"\s+", " ", line).strip() for line in lines if line.strip()]
         self.text = "\n".join(self.lines) or raw_text
+        self.tables = tables or []
 
     def extract(self):
+        vehicle = self._motor_table()
         return {
-            "customerName": self._name(),
+            "customerName": self._table_customer_name() or self._name(),
             "policyNumber": self._policy_number(),
-            "policyType": self._label_value(["policy plan", "policy type", "cover type"], text=True),
-            "productName": self._label_value(["product name", "plan name"], text=True),
+            "policyType": self._label_value(["policy plan", "policy type", "cover type"], text=True) or self._motor_product(),
+            "productName": self._label_value(["product name", "plan name"], text=True) or self._motor_product(),
             "policyStartDate": self._insured_period_date("first") or self._date("(?:period of (?:insurance|own damage|liability)\\s*(?:cover)?|policy period|coverage|insurance)\\s*(?:from|start)") or self._date("from"),
             "policyEndDate": self._insured_period_date("last") or self._date("(?:period of (?:insurance|own damage|liability)\\s*(?:cover)?|policy period|coverage|insurance)\\s*(?:to|end|expiry)") or self._date("to"),
-            "vehicleRegistrationNumber": self._registration(),
-            "vehicleEngineNumber": self._motor_identifiers()[0] or self._identifier(["engine no", "engine number"], min_length=5, max_length=24),
-            "vehicleChassisNumber": self._motor_identifiers()[1] or self._identifier(["chassis no", "chassis number", "vin"], min_length=8, max_length=24),
-            "vehicleIDV": self._vehicle_idv(),
-            "basicODPremium": self._money(["basic od premium", "basic premium", "net own damage premium", "total own damage premium"]),
+            "vehicleRegistrationNumber": vehicle.get("vehicleRegistrationNumber") or self._registration(),
+            "vehicleEngineNumber": vehicle.get("vehicleEngineNumber") or self._motor_identifiers()[0] or self._identifier(["engine no", "engine number"], min_length=5, max_length=24),
+            "vehicleChassisNumber": vehicle.get("vehicleChassisNumber") or self._motor_identifiers()[1] or self._identifier(["chassis no", "chassis number", "vin"], min_length=8, max_length=24),
+            "vehicleMake": vehicle.get("vehicleMake"),
+            "vehicleModel": vehicle.get("vehicleModel"),
+            "vehicleIDV": vehicle.get("vehicleIDV") or self._vehicle_idv(),
+            "basicODPremium": self._money(["basic od premium", "basic premium", "net own damage premium", "total own damage premium", "od total"]),
             "tpPremium": self._money(["basic tp premium", "total liability premium", "third party premium", "liability premium"]),
-            "netPremium": self._money(["net premium"]),
-            "finalPremium": self._money(["gross premium paid", "total premium", "total premium payable", "gross premium payable"]),
+            "netPremium": self._money(["net premium", "gross premium"]),
+            "finalPremium": self._money(["premium amount", "gross premium paid", "total premium payable", "total premium"]),
             "premiumDiscount": self._money(["no claim bonus.*", "premium discount"]),
             "ncb": self._ncb(),
             "customerDOB": self._dob(),
             "customerAge": self._age(),
             "customerMobileNumber": self._mobile(),
             "customerEmailId": self._email(),
-            "customerAddress": self._address(),
+            "customerAddress": self._table_address() or self._address(),
+            "gstAmount": self._gst_amount(),
         }
+
+    def _table_customer_name(self):
+        for table in self.tables:
+            for row in table:
+                cells = [str(cell or "").replace("\n", " ").strip() for cell in row]
+                for index, cell in enumerate(cells):
+                    if "insured's code/name" in cell.lower() or "insured's code/ name" in cell.lower():
+                        value = next((item for item in cells[index + 1:] if item), "")
+                        value = re.sub(r"^[A-Z0-9-]+\s*/\s*", "", value, flags=re.I)
+                        value = re.sub(r"^(?:MR|MRS|MS)\.?\s*", "", value, flags=re.I)
+                        return value or None
+        return None
+
+    def _table_address(self):
+        for table in self.tables:
+            for row in table:
+                cells = [str(cell or "").replace("\n", " ").strip() for cell in row]
+                for index, cell in enumerate(cells):
+                    if "insured address and" in cell.lower():
+                        value = next((item for item in cells[index + 1:] if item), "")
+                        value = re.split(r",?\s*(?:mob|mobile|email)\s*[-:]", value, flags=re.I)[0].strip(" ,")
+                        return value or None
+        return None
+
+    def _motor_table(self):
+        result = {}
+        for table in self.tables:
+            for row_index, row in enumerate(table[:-1]):
+                headers = [str(cell or "").replace("\n", " ").strip().lower() for cell in row]
+                if not any("registration" in cell for cell in headers) or not any("engine" in cell for cell in headers):
+                    continue
+                values = [str(cell or "").replace("\n", " ").strip() for cell in table[row_index + 1]]
+                registration = values[0] if values else ""
+                engine = values[1] if len(values) > 1 else ""
+                make = values[3] if len(values) > 3 else ""
+                reg_match = re.search(r"[A-Z]{2}\s*-?\s*\d{1,2}\s*-?\s*[A-Z]{1,3}\s*-?\s*\d{3,4}", registration, re.I)
+                ids = re.findall(r"\b[A-Z0-9]{6,24}\b", engine, re.I)
+                if reg_match:
+                    result["vehicleRegistrationNumber"] = reg_match.group(0)
+                if len(ids) >= 2:
+                    result["vehicleEngineNumber"], result["vehicleChassisNumber"] = ids[-2:]
+                if make:
+                    result["vehicleMake"] = make
+                    result["vehicleModel"] = make
+        for table in self.tables:
+            for row_index, row in enumerate(table[:-1]):
+                headers = " ".join(str(cell or "") for cell in row).lower()
+                if "idv for the" in headers:
+                    values = [str(cell or "").strip() for cell in table[row_index + 1]]
+                    if len(values) > 4 and values[4]:
+                        result["vehicleIDV"] = values[4]
+        return result
+
+    def _motor_product(self):
+        for line in self.lines[:20]:
+            if "motor" in line.lower() and "policy" in line.lower():
+                return line.strip(" -")
+        return None
+
+    def _gst_amount(self):
+        amounts = []
+        for label in ("cgst", "sgst/utgst", "igst"):
+            value = self._money([label])
+            if value:
+                amounts.append(float(value))
+        return str(sum(amounts)) if amounts else None
 
     def _label_value(self, labels, text=False):
         for index, line in enumerate(self.lines):
@@ -160,8 +231,13 @@ class RuleExtractor:
         return match.group(1) if match else None
 
     def _age(self):
-        match = re.search(r"(?:customer |insured )?age\s*(?:\(yrs?\))?\s*[:#-]?\s*(\d{1,3})\b", self.text, re.I)
-        return match.group(1) if match else None
+        for line in self.lines:
+            if "nominee" in line.lower():
+                continue
+            match = re.search(r"(?:customer |insured )?\bage\b\s*(?:\(yrs?\))?\s*[:#-]?\s*(\d{1,3})\b", line, re.I)
+            if match:
+                return match.group(1)
+        return None
 
     def _mobile(self):
         for line in self.lines:
@@ -174,10 +250,20 @@ class RuleExtractor:
     def _email(self):
         for line in self.lines:
             if re.search(r"(?:customer )?(?:e-?mail|email)(?: id| address)?", line, re.I):
+                if "*" in line:
+                    continue
                 match = re.search(r"[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}", line, re.I)
                 if match and not re.search(r"support|customercare|grievance", match.group(0), re.I):
                     return match.group(0)
         return None
+
+    def has_masked_personal_contacts(self):
+        """A masked insured contact is not recoverable and must not be replaced
+        by a branch, agent, or grievance contact elsewhere in the document."""
+        return any(
+            "*" in line and re.search(r"(?:mob|mobile|e-?mail|email)", line, re.I)
+            for line in self.lines
+        )
 
     def _address(self):
         for index, line in enumerate(self.lines):

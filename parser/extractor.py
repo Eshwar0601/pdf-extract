@@ -13,7 +13,8 @@ def extract_policy_data(pages, lines, raw_text, words=None, tables=None):
 
     extractor = KeywordExtractor(lines=lines, words=words or [], tables=tables or [], raw_text=raw_text)
     keyword_result = extractor.extract()
-    rule_result = RuleExtractor(lines, raw_text).extract()
+    rule_extractor = RuleExtractor(lines, raw_text, tables=tables)
+    rule_result = rule_extractor.extract()
 
     coordinate_result = {}
     table_result = {}
@@ -25,6 +26,9 @@ def extract_policy_data(pages, lines, raw_text, words=None, tables=None):
     # High-confidence label + format rules take precedence over generic keyword
     # matching.  The latter remains a useful fallback for unrecognised layouts.
     merged = merge_data(rule_result, coordinate_result, table_result, keyword_result)
+    if rule_extractor.has_masked_personal_contacts():
+        merged["customerMobileNumber"] = "Not Found"
+        merged["customerEmailId"] = "Not Found"
     merged["companyName"] = company
     merged["insuranceType"] = insurance_type
 

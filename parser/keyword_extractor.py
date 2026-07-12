@@ -43,7 +43,13 @@ class KeywordExtractor:
         return "Not Found"
 
     def find_keyword(self, keyword, field_name=None):
+        if field_name == "customerAge" and keyword.strip().lower() in {"nominee age", "age"}:
+            return None
         for index, line in enumerate(self.lines):
+            if field_name == "customerAge" and "nominee" in line.lower():
+                continue
+            if field_name == "customerMobileNumber" and any(token in line.lower() for token in ["branch office", "agent details", "toll", "helpline"]):
+                continue
             match = self.find_keyword_match(line, keyword)
             if not match:
                 continue
@@ -356,6 +362,8 @@ class KeywordExtractor:
             for keyword in keywords:
                 for idx, cell in enumerate(row_values):
                     if self.cell_contains_keyword(cell, keyword):
+                        if field_name == "customerAge" and "nominee" in cell.lower():
+                            continue
                         if idx + 1 < len(row_values) and row_values[idx + 1].strip():
                             value = self.clean_candidate(row_values[idx + 1])
                             if self.is_valid_value(value, field_name):
